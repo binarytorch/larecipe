@@ -3,77 +3,9 @@
 namespace BinaryTorch\LaRecipe;
 
 use Symfony\Component\DomCrawler\Crawler;
-use BinaryTorch\LaRecipe\Models\Documentation;
-use Illuminate\Database\Eloquent\Concerns\HasAttributes;
-use BinaryTorch\LaRecipe\Traits\HasDocumentationAttributes;
 
 class DocumentationRepository
 {
-    use HasAttributes, HasDocumentationAttributes;
-
-    /**
-     * The documentation model.
-     *
-     * @var Documentation
-     */
-    private $documentation;
-
-    /**
-     * DocumentationController constructor.
-     *
-     * @param Documentation $documentation
-     */
-    public function __construct(Documentation $documentation)
-    {
-        $this->documentation = $documentation;
-
-        $this->docsRoute = route('larecipe.index');
-        $this->defaultVersion = config('larecipe.versions.default');
-        $this->publishedVersions = config('larecipe.versions.published');
-        $this->defaultVersionUrl = route('larecipe.show', ['version' => $this->defaultVersion]);
-    }
-
-    /**
-     * @param $version
-     * @param null $page
-     * @param array $data
-     * @return $this|DocumentationRepository
-     */
-    public function get($version, $page = null, $data = [])
-    {
-        $this->version = $version;
-        $this->sectionPage = $page ?: config('larecipe.docs.landing');
-        $this->index = $this->documentation->getIndex($version);
-
-        $this->content = $this->documentation->get($version, $this->sectionPage, $data);
-
-        if (is_null($this->content)) {
-            return $this->prepareNotFound();
-        }
-
-        $this->prepareTitle()
-            ->prepareCanonical()
-            ->prepareSection($version, $page);
-
-        return $this;
-    }
-
-    /**
-     * If the docs content is empty then show 404 page.
-     *
-     * @return $this
-     */
-    protected function prepareNotFound()
-    {
-        $this->title = 'Page not found';
-        $this->content = view('larecipe::partials.404');
-        $this->currentSection = '';
-        $this->canonical = '';
-        $this->statusCode = 404;
-
-        return $this;
-    }
-
     /**
      * Prepare the page title from the first h1 found.
      *
@@ -103,63 +35,67 @@ class DocumentationRepository
         return $this;
     }
 
-    /**
-     * Prepare the canonical link.
-     *
-     * @return $this
-     */
-    protected function prepareCanonical()
-    {
-        if ($this->documentation->sectionExists($this->defaultVersion, $this->sectionPage)) {
-            $this->canonical = route('larecipe.show', [
-                'version' => $this->defaultVersion,
-                'page' => $this->sectionPage
-            ]);
-        }
 
-        return $this;
+    /**
+     * Get the documentation index page.
+     *
+     * @param  string  $version
+     * @return string
+     */
+    public function getIndex($version)
+    {
+        return $this->cache->remember(function() use($version) {
+            $path = base_path(config('larecipe.docs.path').'/'.$version.'/index.md');
+
+            if ($this->files->exists($path)) {
+                $parsedContent = $this->parse($this->replaceNewLinks($version, $this->files->get($path)));
+
+                $parsedContent = $this->replaceLinks($version, $parsedContent);
+
+                return $parsedContent;
+            }
+
+            return null;
+        }, 'larecipe.docs.'.$version.'.index');
     }
 
     /**
-     * Check if the given version is in the published versions.
+     * Replace the version and route placeholders.
      *
-     * @param $version
+     * @param  string  $version
+     * @param  string  $content
+     * @return string
+     */
+    public static function replaceLinks($version, $content)
+    {
+        $content = str_replace('{{version}}', $version, $content);
+
+        $content = str_replace('{{route}}', trim(config('larecipe.docs.route'), '/'), $content);
+
+        $content = str_replace('"#', '"'.request()->getRequestUri().'#', $content);
+
+        return $content;
+    }
+
+    public static function replaceNewLinks($version, $content)
+    {
+        $content = str_replace('{{version}}', $version, $content);
+
+        return str_replace('{{route}}', trim(config('larecipe.docs.route'), '/'), $content);
+    }
+
+    /**
+     * Check if the given section exists.
+     *
+     * @param  string  $version
+     * @param  string  $page
      * @return bool
      */
-    public function isPublishedVersion($version)
+    public function sectionExists($version, $page)
     {
-        return in_array($version, $this->publishedVersions);
-    }
-
-    /**
-     * Check if the given version is not in the published versions.
-     *
-     * @param $version
-     * @return bool
-     */
-    public function isNotPublishedVersion($version)
-    {
-        return ! $this->isPublishedVersion($version);
-    }
-
-    /**
-     * @param $version
-     *
-     * @return $this
-     */
-    public function search($version)
-    {
-        return $this->documentation->index($version);
-    }
-
-    /**
-     * Dynamically retrieve attributes on the model.
-     *
-     * @param  string  $key
-     * @return mixed
-     */
-    public function __get($key)
-    {
-        return $this->getAttribute($key);
+        return $this->files->exists(
+            base_path(config('larecipe.docs.path').'/'.$version.'/'.$page.'.md')
+        );
     }
 }
+
